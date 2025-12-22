@@ -1,0 +1,24 @@
+[package]
+name = "nmerkle-trees"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+ark-crypto-primitives = { git = "https://github.com/arkworks-rs/crypto-primitives", features = ["constraints", "sponge", "crh", "merkle_tree"] }
+ark-ff = { git = "https://github.com/arkworks-rs/algebra", default-features = false }
+ark-serialize = { git = "https://github.com/arkworks-rs/algebra", features = ["derive"] }
+ark-r1cs-std = { git = "https://github.com/arkworks-rs/r1cs-std", default-features = false }
+ark-relations = { git = "https://github.com/arkworks-rs/snark", default-features = false }
+ark-std = { git = "https://github.com/arkworks-rs/std", default-features = false }
+
+[dev-dependencies]
+ark-bn254 = { git = "https://github.com/arkworks-rs/algebra" }
+
+
+[patch.crates-io]
+ark-ff = { git = "https://github.com/arkworks-rs/algebra" }
+ark-serialize = { git = "https://github.com/arkworks-rs/algebra" }
+ark-std = { git = "https://github.com/arkworks-rs/std" }
+ark-crypto-primitives = { git = "https://github.com/winderica/crypto-primitives", rev = "af003fc" }
+ark-r1cs-std = { git = "https://github.com/winderica/r1cs-std", rev = "ae8283a" }         # "sw-fix-updated" branch
+ark-bn254 = { git = "https://github.com/arkworks-rs/algebra" }
