@@ -381,7 +381,19 @@ pub mod tests {
                     &leaf,
                 )
                 .unwrap();
-            assert!(res.value().unwrap())
+            assert!(res.value().unwrap());
+
+            // check proof verification fails for bad leaf
+            let res = proof_var
+                .verify_membership(
+                    cs.clone(),
+                    &poseidon_conf_var,
+                    &poseidon_conf_var,
+                    &root,
+                    &(leaf + FpVar::new_constant(cs.clone(), Fr::from(1)).unwrap()),
+                )
+                .unwrap();
+            assert!(!res.value().unwrap())
         }
 
         // check update logic
