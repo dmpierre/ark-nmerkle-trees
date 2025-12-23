@@ -5,28 +5,29 @@ use ark_crypto_primitives::{
 use ark_ff::PrimeField;
 use ark_serialize::{CanonicalDeserialize, CanonicalSerialize};
 
-/// Merkle tree has two types of hashes.
-/// * `LeafHash`: Convert leaf to leaf digest
-/// * `NToOneHash`: Compress N inner digests to one inner digest
-pub trait NAryConfig<const N: usize, P: Config> {
+pub trait NArySparseConfig<const N: usize, P: Config> {
     type NToOneHashParams: Clone + CanonicalSerialize + CanonicalDeserialize + Sync;
     type NToOneHash: CRHScheme<
         Input = [P::InnerDigest],
         Output = P::InnerDigest,
         Parameters = Self::NToOneHashParams,
     >;
+    // NOTE: n leaves will be N^{HEIGHT - 1}
+    const HEIGHT: u64;
 }
 
-pub trait NAryConfigGadget<
+pub trait NArySparseConfigGadget<
     const N: usize,
     P: Config,
-    F: PrimeField,
     PG: ConfigGadget<P, F>,
-    NP: NAryConfig<N, P>,
+    F: PrimeField,
+    SP: NArySparseConfig<N, P>,
 >
 {
+    const HEIGHT: u64;
+
     type NToOneHash: CRHSchemeGadget<
-        <NP as NAryConfig<N, P>>::NToOneHash,
+        <SP as NArySparseConfig<N, P>>::NToOneHash,
         F,
         InputVar = [PG::InnerDigest],
         OutputVar = PG::InnerDigest,

@@ -1,8 +1,4 @@
-use ark_crypto_primitives::merkle_tree::{constraints::DigestVarConverter, DigestConverter};
-use std::{
-    marker::PhantomData,
-    ops::{Add, Mul, Sub},
-};
+use std::marker::PhantomData;
 
 use ark_crypto_primitives::{
     crh::CRHSchemeGadget,
@@ -17,7 +13,7 @@ use crate::{
     NAryPath, PathStep,
 };
 
-fn index_to_selector<const N: usize>(idx: usize) -> [bool; N] {
+pub(crate) fn index_to_selector<const N: usize>(idx: usize) -> [bool; N] {
     let mut idx_as_vec = [false; N];
     idx_as_vec[idx] = true;
     idx_as_vec
@@ -25,8 +21,8 @@ fn index_to_selector<const N: usize>(idx: usize) -> [bool; N] {
 
 #[derive(Default)]
 pub struct PathStepVar<const N: usize, P: Config, F: PrimeField, PG: ConfigGadget<P, F>> {
-    selectors: Vec<Boolean<F>>,
-    siblings: Vec<PG::InnerDigest>,
+    pub selectors: Vec<Boolean<F>>,
+    pub siblings: Vec<PG::InnerDigest>,
 }
 
 impl<const N: usize, P: Config, F: PrimeField, PG: ConfigGadget<P, F>> AllocVar<PathStep<P>, F>
