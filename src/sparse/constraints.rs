@@ -153,7 +153,6 @@ impl<
     /// Calculate the root of the Merkle tree assuming that `leaf` is the leaf on the path defined by `self`.
     pub fn calculate_root(
         &self,
-        cs: ConstraintSystemRef<F>,
         leaf_params: &LeafParam<PG, P, F>,
         n_to_one_params: &NToOneParam<N, P, PG, F, SP, SPG>,
         leaf: &PG::Leaf,
@@ -190,13 +189,12 @@ impl<
 
     pub fn verify_membership(
         &self,
-        cs: ConstraintSystemRef<F>,
         leaf_params: &LeafParam<PG, P, F>,
         n_to_one_params: &NToOneParam<N, P, PG, F, SP, SPG>,
         root: &PG::InnerDigest,
         leaf: &PG::Leaf,
     ) -> Result<Boolean<F>, SynthesisError> {
-        let expected_root = self.calculate_root(cs, leaf_params, n_to_one_params, leaf)?;
+        let expected_root = self.calculate_root(leaf_params, n_to_one_params, leaf)?;
         Ok(expected_root.is_eq(root)?)
     }
 }
@@ -371,20 +369,13 @@ pub mod tests {
             .unwrap();
             let leaf = FpVar::new_witness(cs.clone(), || Ok(value)).unwrap();
             let res = proof_var
-                .verify_membership(
-                    cs.clone(),
-                    &poseidon_conf_var,
-                    &poseidon_conf_var,
-                    &root,
-                    &leaf,
-                )
+                .verify_membership(&poseidon_conf_var, &poseidon_conf_var, &root, &leaf)
                 .unwrap();
             assert!(res.value().unwrap());
 
             // check proof verification fails for bad leaf
             let res = proof_var
                 .verify_membership(
-                    cs.clone(),
                     &poseidon_conf_var,
                     &poseidon_conf_var,
                     &root,
