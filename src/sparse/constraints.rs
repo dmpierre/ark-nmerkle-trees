@@ -1,3 +1,4 @@
+use ark_r1cs_std::fields::FieldVar;
 use std::marker::PhantomData;
 
 use ark_crypto_primitives::{
@@ -44,7 +45,6 @@ impl<
     // eg: siblings: [sibling_0, sibling1], to_insert: value, selectors: [0, 1, 0]
     // ---> [sibling0, value, sibling1]
     pub fn get_node(
-        cs: ConstraintSystemRef<F>,
         siblings: &Vec<PG::LeafDigest>,
         selectors: &Vec<Boolean<F>>,
         claimed_hash: &PG::LeafDigest,
@@ -59,7 +59,7 @@ impl<
 
         // t indicates if insertion has occured within the vector
         let mut t_i = s_0.clone();
-        let one = FpVar::new_constant(cs.clone(), F::one())?;
+        let one = FpVar::one();
 
         // we already did first sibling, iterate from the first to the penultimate
         for i in 1..N - 1 {
@@ -161,7 +161,6 @@ impl<
         let claimed_leaf_hash = PG::LeafHash::evaluate(leaf_params, leaf)?;
 
         let leaf_node = NArySparsePathVar::<N, P, PG, F, SP, SPG>::get_node(
-            cs.clone(),
             &self.leaf_siblings_hashes,
             &self.leaf_selectors,
             &claimed_leaf_hash,
@@ -175,7 +174,6 @@ impl<
         // To traverse up a MT, we iterate over the path from bottom to top (i.e. in reverse)
         for step in (0..self.auth_path.len()).rev() {
             let node = NArySparsePathVar::<N, P, PG, F, SP, SPG>::get_node(
-                cs.clone(),
                 &self.auth_path[step].siblings,
                 &self.auth_path[step].selectors,
                 &curr_hash,
@@ -401,7 +399,7 @@ pub mod tests {
     }
 
     #[test]
-    fn test_nary_sparse_trees() {
+    fn test_nary_sparse_trees_constraints() {
         let poseidon_conf = initialize_poseidon_config::<Fr>();
         let index_values = vec![(0, Fr::from(42)), (4, Fr::from(24))];
         run_test::<2, NoArrayBinaryPoseidonTree<Fr>, NoArrayBinaryPoseidonTreeGadget<Fr>>(
