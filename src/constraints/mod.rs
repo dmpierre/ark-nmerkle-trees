@@ -13,10 +13,14 @@ use crate::{
     NAryPath, PathStep,
 };
 
-pub(crate) fn index_to_selector<const N: usize>(idx: usize) -> [bool; N] {
-    let mut idx_as_vec = [false; N];
-    idx_as_vec[idx] = true;
-    idx_as_vec
+pub(crate) fn index_to_selector<const N: usize>(idx: usize) -> Vec<bool> {
+    let mut idx_as_vec = vec![false; N - 1];
+    if idx == N - 1 {
+        idx_as_vec // this is the last element, array is false everywhere
+    } else {
+        idx_as_vec[idx] = true;
+        idx_as_vec
+    }
 }
 
 #[derive(Default)]

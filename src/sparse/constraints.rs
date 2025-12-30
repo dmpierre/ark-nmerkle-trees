@@ -1,4 +1,6 @@
-use ark_r1cs_std::fields::FieldVar;
+use crate::constraints::index_to_selector;
+use ark_r1cs_std::GR1CSVar;
+use ark_r1cs_std::{convert::ToConstraintFieldGadget, fields::FieldVar};
 use std::marker::PhantomData;
 
 use ark_crypto_primitives::{
@@ -7,10 +9,10 @@ use ark_crypto_primitives::{
 };
 use ark_ff::PrimeField;
 use ark_r1cs_std::{alloc::AllocVar, eq::EqGadget, fields::fp::FpVar, prelude::Boolean};
-use ark_relations::gr1cs::{ConstraintSystemRef, SynthesisError};
+use ark_relations::gr1cs::SynthesisError;
 
 use crate::{
-    constraints::{index_to_selector, PathStepVar},
+    constraints::PathStepVar,
     sparse::traits::{NArySparseConfig, NArySparseConfigGadget},
 };
 
@@ -39,11 +41,6 @@ impl<
         SPG: NArySparseConfigGadget<N, P, PG, F, SP>,
     > NArySparsePathVar<N, P, PG, F, SP, SPG>
 {
-    // returns a vector which will then be hashed according to a provided vector of selectors and values
-    // for a tree of arity N, we have N - 1 candidate siblings but N selectors (since nodes have N
-    // values)
-    // eg: siblings: [sibling_0, sibling1], to_insert: value, selectors: [0, 1, 0]
-    // ---> [sibling0, value, sibling1]
     pub fn get_node(
         siblings: &Vec<PG::LeafDigest>,
         selectors: &Vec<Boolean<F>>,
@@ -51,34 +48,22 @@ impl<
     ) -> Result<Vec<FpVar<F>>, SynthesisError> {
         let mut to_hash = Vec::with_capacity(N);
 
-        // first element of vector to be hashed
-        let s_0: &FpVar<F> = &selectors[0].clone().into();
-        let y_0 = &siblings[0] + s_0 * (claimed_hash - &siblings[0]);
+        let mut ptr = claimed_hash;
+        let mut insert = selectors[0].select(ptr, &siblings[0])?;
+        let mut cur = selectors[0].select(&siblings[0], ptr)?;
+        to_hash.push(insert);
 
-        to_hash.push(y_0);
-
-        // t indicates if insertion has occured within the vector
-        let mut t_i = s_0.clone();
-        let one = FpVar::one();
-
-        // we already did first sibling, iterate from the first to the penultimate
+        let mut inserted = selectors[0].clone();
         for i in 1..N - 1 {
-            let s_i: FpVar<F> = selectors[i].clone().into();
-            let x_i_minus_1 = &siblings[i - 1];
-            let x_i = &siblings[i];
-
-            let t_i_xi_minus_1 = &t_i * x_i_minus_1;
-            let c: FpVar<F> = &s_i * (claimed_hash - x_i);
-            let y_i = t_i_xi_minus_1 + (&one - &t_i) * (x_i + c);
-            to_hash.push(y_i);
-            t_i += &s_i;
+            ptr = &siblings[i];
+            let selector = inserted.select(&Boolean::constant(true), &selectors[i])?;
+            insert = selector.select(&cur, ptr)?;
+            cur = selector.select(ptr, &cur)?;
+            to_hash.push(insert);
+            inserted = selector;
         }
 
-        // do ultimate sibling
-        let s_last: &FpVar<F> = &selectors[N - 1].clone().into();
-        let y_last = &siblings[N - 2] + s_last * (claimed_hash - &siblings[N - 2]);
-
-        to_hash.push(y_last);
+        to_hash.push(cur);
 
         Ok(to_hash)
     }
@@ -214,7 +199,10 @@ pub mod tests {
             },
             CRHSchemeGadget,
         },
-        merkle_tree::{constraints::ConfigGadget, IdentityDigestConverter},
+        merkle_tree::{
+            constraints::{ConfigGadget, PathVar},
+            IdentityDigestConverter, MerkleTree,
+        },
         sponge::{poseidon::PoseidonConfig, Absorb},
     };
     use ark_ff::PrimeField;
@@ -222,6 +210,7 @@ pub mod tests {
     use ark_relations::gr1cs::ConstraintSystem;
 
     use crate::{
+        constraints::tests::PoseidonTreeGadget,
         sparse::{
             tests::{
                 NoArrayBinaryPoseidonTree, NoArrayCRH, NoArrayPoseidonTree,
@@ -230,7 +219,7 @@ pub mod tests {
             traits::{NArySparseConfig, NArySparseConfigGadget},
             NAryMerkleSparseTree,
         },
-        tests::initialize_poseidon_config,
+        tests::{initialize_poseidon_config, PoseidonTree},
     };
 
     use super::NArySparsePathVar;
@@ -358,6 +347,9 @@ pub mod tests {
 
         for (i, value) in index_values.clone() {
             let proof = sparse_mt.generate_proof(i as usize).unwrap();
+            assert!(proof
+                .verify(&poseidon_conf, &poseidon_conf, &sparse_mt.root(), value)
+                .unwrap());
             let proof_var = NArySparsePathVar::<
                 N,
                 NoArrayPoseidonTree<Fr>,
@@ -389,15 +381,87 @@ pub mod tests {
         for (i, value) in index_values.clone() {}
     }
 
+    fn run_test_2<
+        const N: usize,
+        SP: NArySparseConfig<N, NoArrayPoseidonTree<Fr>, NToOneHash = CRH<Fr>>,
+        SPG: NArySparseConfigGadget<
+            N,
+            NoArrayPoseidonTree<Fr>,
+            NoArrayPoseidonTreeGadget<Fr>,
+            Fr,
+            SP,
+            NToOneHash = CRHGadget<Fr>,
+        >,
+    >(
+        n_leaf_nodes: usize,
+        poseidon_conf: PoseidonConfig<Fr>,
+        index_values: Vec<(usize, Fr)>,
+    ) {
+        let cs = ConstraintSystem::<Fr>::new_ref();
+
+        // testing binary tree
+        let mut leaves = vec![[Fr::default()]; n_leaf_nodes];
+        let mut sparse_leaves = BTreeMap::<usize, Fr>::new();
+        for (i, value) in index_values.clone() {
+            leaves[i as usize] = [value];
+            sparse_leaves.insert(i, value);
+        }
+
+        let mut sparse_mt = NAryMerkleSparseTree::<N, NoArrayPoseidonTree<Fr>, SP>::new(
+            &poseidon_conf,
+            &poseidon_conf,
+            &sparse_leaves,
+            &Fr::default(),
+        )
+        .unwrap();
+
+        let proof = sparse_mt.generate_proof(0 as usize).unwrap();
+        let proof_var = NArySparsePathVar::<
+            N,
+            NoArrayPoseidonTree<Fr>,
+            NoArrayPoseidonTreeGadget<Fr>,
+            Fr,
+            SP,
+            SPG,
+        >::new_witness(cs.clone(), || Ok(proof))
+        .unwrap();
+        println!("[implem] num_variables: {}", cs.num_variables());
+        println!("[implem] num constraints: {}", cs.num_constraints());
+
+        let path_step = &proof_var.auth_path[0];
+        println!("n siblings: {}", proof_var.leaf_siblings_hashes.len());
+        println!("path len: {}", proof_var.auth_path.len());
+        println!("selectors len: {}", path_step.selectors.len());
+        println!("selectors len: {}", proof_var.leaf_selectors.len());
+        println!("siblings len: {}", path_step.siblings.len());
+
+        //let leaf = FpVar::new_witness(cs.clone(), || Ok(value)).unwrap();
+        //let res = proof_var
+        //    .verify_membership(&poseidon_conf_var, &poseidon_conf_var, &root, &leaf)
+        //    .unwrap();
+        //assert!(res.value().unwrap());
+
+        // check proof verification fails for bad leaf
+    }
+
     #[test]
     fn test_nary_sparse_trees_constraints() {
         let poseidon_conf = initialize_poseidon_config::<Fr>();
-        let index_values = vec![(0, Fr::from(42)), (4, Fr::from(24))];
+        let index_values = vec![(0, Fr::from(42))];
+        let mut leaves = vec![[Fr::default()]; 8];
+        leaves[0] = [Fr::from(42)];
+
         run_test::<2, NoArrayBinaryPoseidonTree<Fr>, NoArrayBinaryPoseidonTreeGadget<Fr>>(
             8,
             poseidon_conf.clone(),
             index_values.clone(),
         );
+
+        //let mt =
+        //    MerkleTree::<PoseidonTree<Fr>>::new(&poseidon_conf, &poseidon_conf, &leaves).unwrap();
+        //let proof = mt.generate_proof(0).unwrap();
+        //println!("root arkworks: {}", mt.root());
+        //println!("path length arkworks {}", proof.auth_path.len());
 
         let index_values = vec![(0, Fr::from(42)), (4, Fr::from(24)), (25, Fr::from(42))];
         run_test::<3, NoArrayTernaryPoseidonTree<Fr>, NoArrayTernaryPoseidonTreeGadget<Fr>>(

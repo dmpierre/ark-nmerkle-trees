@@ -25,12 +25,28 @@ pub type LeafParam<P: Config> = <P::LeafHash as CRHScheme>::Parameters;
 pub type NToOneParam<const N: usize, P: Config, SP: NArySparseConfig<N, P>> =
     <<SP as NArySparseConfig<N, P>>::NToOneHash as CRHScheme>::Parameters;
 
-#[derive(Default, Clone)]
+#[derive(Clone)]
 pub struct NArySparsePath<const N: usize, P: Config, SP: NArySparseConfig<N, P>> {
     pub leaf_siblings_hashes: Vec<P::LeafDigest>,
     pub auth_path: Vec<PathStep<P>>,
     pub leaf_index: usize, // indicates position in the array before hashing siblings leaf nodes
     _m: PhantomData<SP>,
+}
+
+impl<const N: usize, P: Config, SP: NArySparseConfig<N, P>> Default for NArySparsePath<N, P, SP> {
+    fn default() -> Self {
+        let leaf_siblings_hashes = vec![P::LeafDigest::default(); N - 1];
+        let leaf_index = 0;
+        let auth_path = (0..SP::HEIGHT - 2)
+            .map(|_| PathStep::<P>::new(0, vec![P::InnerDigest::default(); N - 1]))
+            .collect();
+        Self {
+            leaf_siblings_hashes,
+            auth_path,
+            leaf_index,
+            _m: PhantomData,
+        }
+    }
 }
 
 impl<const N: usize, P: Config, NP: NArySparseConfig<N, P>> NArySparsePath<N, P, NP> {
@@ -411,7 +427,13 @@ where
         n_to_one_params: &NToOneParam<N, P, SP>,
         root_hash: &P::InnerDigest,
         leaf: L,
-    ) -> Result<bool, crate::Error> {
+    ) -> Result<bool, crate::Error>
+    where
+        <<P as Config>::LeafInnerDigestConverter as DigestConverter<
+            <P as Config>::LeafDigest,
+            <<P as Config>::TwoToOneHash as TwoToOneCRHScheme>::Input,
+        >>::TargetType: Debug,
+    {
         // calculate leaf hash
         let claimed_leaf_hash = P::LeafHash::evaluate(&leaf_hash_params, leaf)?;
         let mut leaves = self.leaf_siblings_hashes.clone();
@@ -436,6 +458,7 @@ where
             to_hash.insert(step.index as usize, curr_path_node);
             // check if path node at this level is left or right
             // update curr_path_node
+
             curr_path_node = SP::NToOneHash::evaluate(&n_to_one_params, to_hash)?;
         }
 
