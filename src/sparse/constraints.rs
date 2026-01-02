@@ -1,6 +1,4 @@
 use crate::constraints::index_to_selector;
-use ark_r1cs_std::GR1CSVar;
-use ark_r1cs_std::{convert::ToConstraintFieldGadget, fields::FieldVar};
 use std::marker::PhantomData;
 
 use ark_crypto_primitives::{
@@ -182,6 +180,33 @@ impl<
         let expected_root = self.calculate_root(leaf_params, n_to_one_params, leaf)?;
         Ok(expected_root.is_eq(root)?)
     }
+
+    pub fn update_leaf(
+        &self,
+        leaf_params: &LeafParam<PG, P, F>,
+        n_to_one_params: &NToOneParam<N, P, PG, F, SP, SPG>,
+        old_root: &PG::InnerDigest,
+        old_leaf: &PG::Leaf,
+        new_leaf: &PG::Leaf,
+    ) -> Result<PG::InnerDigest, SynthesisError> {
+        self.verify_membership(leaf_params, n_to_one_params, old_root, old_leaf)?
+            .enforce_equal(&Boolean::TRUE)?;
+        Ok(self.calculate_root(leaf_params, n_to_one_params, new_leaf)?)
+    }
+
+    pub fn update_and_check(
+        &self,
+        leaf_params: &LeafParam<PG, P, F>,
+        n_to_one_params: &NToOneParam<N, P, PG, F, SP, SPG>,
+        old_root: &PG::InnerDigest,
+        new_root: &PG::InnerDigest,
+        old_leaf: &PG::Leaf,
+        new_leaf: &PG::Leaf,
+    ) -> Result<Boolean<F>, SynthesisError> {
+        let actual_new_root =
+            self.update_leaf(leaf_params, n_to_one_params, old_root, old_leaf, new_leaf)?;
+        Ok(actual_new_root.is_eq(&new_root)?)
+    }
 }
 
 #[cfg(test)]
@@ -199,10 +224,7 @@ pub mod tests {
             },
             CRHSchemeGadget,
         },
-        merkle_tree::{
-            constraints::{ConfigGadget, PathVar},
-            IdentityDigestConverter, MerkleTree,
-        },
+        merkle_tree::{constraints::ConfigGadget, IdentityDigestConverter},
         sponge::{poseidon::PoseidonConfig, Absorb},
     };
     use ark_ff::PrimeField;
@@ -210,7 +232,6 @@ pub mod tests {
     use ark_relations::gr1cs::ConstraintSystem;
 
     use crate::{
-        constraints::tests::PoseidonTreeGadget,
         sparse::{
             tests::{
                 NoArrayBinaryPoseidonTree, NoArrayCRH, NoArrayPoseidonTree,
@@ -219,7 +240,7 @@ pub mod tests {
             traits::{NArySparseConfig, NArySparseConfigGadget},
             NAryMerkleSparseTree,
         },
-        tests::{initialize_poseidon_config, PoseidonTree},
+        tests::initialize_poseidon_config,
     };
 
     use super::NArySparsePathVar;
@@ -316,7 +337,6 @@ pub mod tests {
             NToOneHash = CRHGadget<Fr>,
         >,
     >(
-        n_leaf_nodes: usize,
         poseidon_conf: PoseidonConfig<Fr>,
         index_values: Vec<(usize, Fr)>,
     ) {
@@ -325,10 +345,8 @@ pub mod tests {
             CRHParametersVar::new_constant(cs.clone(), poseidon_conf.clone()).unwrap();
 
         // testing binary tree
-        let mut leaves = vec![[Fr::default()]; n_leaf_nodes];
         let mut sparse_leaves = BTreeMap::<usize, Fr>::new();
         for (i, value) in index_values.clone() {
-            leaves[i as usize] = [value];
             sparse_leaves.insert(i, value);
         }
 
@@ -340,16 +358,13 @@ pub mod tests {
         )
         .unwrap();
 
-        let root = <NoArrayPoseidonTreeGadget<Fr> as ConfigGadget<NoArrayPoseidonTree<Fr>, Fr>>::InnerDigest::new_witness(
-            cs.clone(),
-            || Ok(sparse_mt.root()),
-        ).unwrap();
-
         for (i, value) in index_values.clone() {
             let proof = sparse_mt.generate_proof(i as usize).unwrap();
-            assert!(proof
-                .verify(&poseidon_conf, &poseidon_conf, &sparse_mt.root(), value)
-                .unwrap());
+            let root = <NoArrayPoseidonTreeGadget<Fr> as ConfigGadget<
+                NoArrayPoseidonTree<Fr>,
+                Fr,
+            >>::InnerDigest::new_witness(cs.clone(), || Ok(sparse_mt.root()))
+            .unwrap();
             let proof_var = NArySparsePathVar::<
                 N,
                 NoArrayPoseidonTree<Fr>,
@@ -359,113 +374,53 @@ pub mod tests {
                 SPG,
             >::new_witness(cs.clone(), || Ok(proof))
             .unwrap();
+
+            // check membership logic
             let leaf = FpVar::new_witness(cs.clone(), || Ok(value)).unwrap();
             let res = proof_var
                 .verify_membership(&poseidon_conf_var, &poseidon_conf_var, &root, &leaf)
                 .unwrap();
             assert!(res.value().unwrap());
 
-            // check proof verification fails for bad leaf
-            let res = proof_var
-                .verify_membership(
+            // check update logic
+            let new_leaf = value + Fr::from(1);
+            sparse_mt.update(i, &new_leaf).unwrap();
+
+            let new_root = <NoArrayPoseidonTreeGadget<Fr> as ConfigGadget<
+                NoArrayPoseidonTree<Fr>,
+                Fr,
+            >>::InnerDigest::new_witness(cs.clone(), || {
+                Ok(sparse_mt.root())
+            })
+            .unwrap();
+
+            let new_leaf_var = FpVar::new_witness(cs.clone(), || Ok(new_leaf)).unwrap();
+
+            let update = proof_var
+                .update_and_check(
                     &poseidon_conf_var,
                     &poseidon_conf_var,
                     &root,
-                    &(leaf + FpVar::new_constant(cs.clone(), Fr::from(1)).unwrap()),
+                    &new_root,
+                    &leaf,
+                    &new_leaf_var,
                 )
                 .unwrap();
-            assert!(!res.value().unwrap())
+            assert!(update.value().unwrap());
         }
-
-        // check update logic
-        for (i, value) in index_values.clone() {}
-    }
-
-    fn run_test_2<
-        const N: usize,
-        SP: NArySparseConfig<N, NoArrayPoseidonTree<Fr>, NToOneHash = CRH<Fr>>,
-        SPG: NArySparseConfigGadget<
-            N,
-            NoArrayPoseidonTree<Fr>,
-            NoArrayPoseidonTreeGadget<Fr>,
-            Fr,
-            SP,
-            NToOneHash = CRHGadget<Fr>,
-        >,
-    >(
-        n_leaf_nodes: usize,
-        poseidon_conf: PoseidonConfig<Fr>,
-        index_values: Vec<(usize, Fr)>,
-    ) {
-        let cs = ConstraintSystem::<Fr>::new_ref();
-
-        // testing binary tree
-        let mut leaves = vec![[Fr::default()]; n_leaf_nodes];
-        let mut sparse_leaves = BTreeMap::<usize, Fr>::new();
-        for (i, value) in index_values.clone() {
-            leaves[i as usize] = [value];
-            sparse_leaves.insert(i, value);
-        }
-
-        let mut sparse_mt = NAryMerkleSparseTree::<N, NoArrayPoseidonTree<Fr>, SP>::new(
-            &poseidon_conf,
-            &poseidon_conf,
-            &sparse_leaves,
-            &Fr::default(),
-        )
-        .unwrap();
-
-        let proof = sparse_mt.generate_proof(0 as usize).unwrap();
-        let proof_var = NArySparsePathVar::<
-            N,
-            NoArrayPoseidonTree<Fr>,
-            NoArrayPoseidonTreeGadget<Fr>,
-            Fr,
-            SP,
-            SPG,
-        >::new_witness(cs.clone(), || Ok(proof))
-        .unwrap();
-        println!("[implem] num_variables: {}", cs.num_variables());
-        println!("[implem] num constraints: {}", cs.num_constraints());
-
-        let path_step = &proof_var.auth_path[0];
-        println!("n siblings: {}", proof_var.leaf_siblings_hashes.len());
-        println!("path len: {}", proof_var.auth_path.len());
-        println!("selectors len: {}", path_step.selectors.len());
-        println!("selectors len: {}", proof_var.leaf_selectors.len());
-        println!("siblings len: {}", path_step.siblings.len());
-
-        //let leaf = FpVar::new_witness(cs.clone(), || Ok(value)).unwrap();
-        //let res = proof_var
-        //    .verify_membership(&poseidon_conf_var, &poseidon_conf_var, &root, &leaf)
-        //    .unwrap();
-        //assert!(res.value().unwrap());
-
-        // check proof verification fails for bad leaf
     }
 
     #[test]
     fn test_nary_sparse_trees_constraints() {
         let poseidon_conf = initialize_poseidon_config::<Fr>();
-        let index_values = vec![(0, Fr::from(42))];
-        let mut leaves = vec![[Fr::default()]; 8];
-        leaves[0] = [Fr::from(42)];
-
+        let index_values = vec![(0, Fr::from(42)), (2, Fr::from(43))];
         run_test::<2, NoArrayBinaryPoseidonTree<Fr>, NoArrayBinaryPoseidonTreeGadget<Fr>>(
-            8,
             poseidon_conf.clone(),
             index_values.clone(),
         );
 
-        //let mt =
-        //    MerkleTree::<PoseidonTree<Fr>>::new(&poseidon_conf, &poseidon_conf, &leaves).unwrap();
-        //let proof = mt.generate_proof(0).unwrap();
-        //println!("root arkworks: {}", mt.root());
-        //println!("path length arkworks {}", proof.auth_path.len());
-
         let index_values = vec![(0, Fr::from(42)), (4, Fr::from(24)), (25, Fr::from(42))];
         run_test::<3, NoArrayTernaryPoseidonTree<Fr>, NoArrayTernaryPoseidonTreeGadget<Fr>>(
-            27,
             poseidon_conf.clone(),
             index_values.clone(),
         );
@@ -477,7 +432,6 @@ pub mod tests {
             (123, Fr::from(42)),
         ];
         run_test::<5, NoArrayQuinaryPoseidonTree<Fr>, NoArrayQuinaryPoseidonTreeGadget<Fr>>(
-            125,
             poseidon_conf.clone(),
             index_values,
         );

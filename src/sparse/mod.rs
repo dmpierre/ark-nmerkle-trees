@@ -379,6 +379,7 @@ impl<
             curr_index = parent(curr_index, N);
             self.tree.insert(curr_index, updated_path.pop().unwrap());
         }
+        self.root = self.tree[&0];
         Ok(())
     }
 
@@ -403,6 +404,8 @@ impl<
             curr_index = parent(curr_index, N);
             self.tree.insert(curr_index, updated_path.pop().unwrap());
         }
+        assert!(is_root(curr_index));
+        self.root = self.tree[&0];
         Ok(true)
     }
 }
@@ -662,8 +665,9 @@ pub mod tests {
 
         // check update logic
         for (i, value) in index_values.clone() {
-            let new_leaf = value + Fr::from(1);
+            let new_leaf = value + Fr::from(1000);
             let (_, updated_path) = sparse_mt.updated_path(i, new_leaf).unwrap();
+
             let is_updated = sparse_mt
                 .check_update(i, &new_leaf, &updated_path[0])
                 .unwrap();
@@ -674,6 +678,7 @@ pub mod tests {
     #[test]
     fn test_nary_sparse_trees() {
         let poseidon_conf = initialize_poseidon_config::<Fr>();
+
         let index_values = vec![(0, Fr::from(42)), (4, Fr::from(24))];
         run_test::<2, BinaryPoseidonTree<Fr>, NoArrayBinaryPoseidonTree<Fr>>(
             8,
