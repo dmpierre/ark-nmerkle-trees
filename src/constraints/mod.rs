@@ -23,7 +23,7 @@ pub(crate) fn index_to_selector<const N: usize>(idx: usize) -> Vec<bool> {
     }
 }
 
-#[derive(Default)]
+#[derive(Default, Clone)]
 pub struct PathStepVar<const N: usize, P: Config, F: PrimeField, PG: ConfigGadget<P, F>> {
     pub selectors: Vec<Boolean<F>>,
     pub siblings: Vec<PG::InnerDigest>,
