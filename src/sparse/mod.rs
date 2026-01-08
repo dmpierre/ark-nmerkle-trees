@@ -22,18 +22,18 @@ pub mod constraints;
 pub mod traits;
 
 pub type LeafParam<P: Config> = <P::LeafHash as CRHScheme>::Parameters;
-pub type NToOneParam<const N: usize, P: Config, SP: NArySparseConfig<N, P>> =
-    <<SP as NArySparseConfig<N, P>>::NToOneHash as CRHScheme>::Parameters;
+pub type NToOneParam<P: Config, SP: NArySparseConfig<P>> =
+    <<SP as NArySparseConfig< P>>::NToOneHash as CRHScheme>::Parameters;
 
 #[derive(Clone)]
-pub struct NArySparsePath<const N: usize, P: Config, SP: NArySparseConfig<N, P>> {
+pub struct NArySparsePath<const N: usize, P: Config, SP: NArySparseConfig<P>> {
     pub leaf_siblings_hashes: Vec<P::LeafDigest>,
     pub auth_path: Vec<PathStep<P>>,
     pub leaf_index: usize, // indicates position in the array before hashing siblings leaf nodes
     _m: PhantomData<SP>,
 }
 
-impl<const N: usize, P: Config, SP: NArySparseConfig<N, P>> Default for NArySparsePath<N, P, SP> {
+impl<const N: usize, P: Config, SP: NArySparseConfig<P>> Default for NArySparsePath<N, P, SP> {
     fn default() -> Self {
         let leaf_siblings_hashes = vec![P::LeafDigest::default(); N - 1];
         let leaf_index = 0;
@@ -49,7 +49,7 @@ impl<const N: usize, P: Config, SP: NArySparseConfig<N, P>> Default for NArySpar
     }
 }
 
-impl<const N: usize, P: Config, NP: NArySparseConfig<N, P>> NArySparsePath<N, P, NP> {
+impl<const N: usize, P: Config, NP: NArySparseConfig<P>> NArySparsePath<N, P, NP> {
     pub fn new(
         leaf_siblings_hashes: Vec<P::LeafDigest>,
         auth_path: Vec<PathStep<P>>,
@@ -64,7 +64,7 @@ impl<const N: usize, P: Config, NP: NArySparseConfig<N, P>> NArySparsePath<N, P,
     }
 }
 
-pub struct NAryMerkleSparseTree<const N: usize, P: Config, SP: NArySparseConfig<N, P>> {
+pub struct NAryMerkleSparseTree<const N: usize, P: Config, SP: NArySparseConfig<P>> {
     pub tree: BTreeMap<usize, P::LeafDigest>,
     pub leaf_hash_param: <P::LeafHash as CRHScheme>::Parameters,
     pub n_to_one_hash_param: <SP::NToOneHash as CRHScheme>::Parameters,
@@ -76,7 +76,7 @@ pub fn gen_empty_hashes<
     const N: usize,
     F: PrimeField + Absorb,
     P: Config<InnerDigest = F, LeafDigest = F, LeafInnerDigestConverter = IdentityDigestConverter<F>>,
-    SP: NArySparseConfig<N, P>,
+    SP: NArySparseConfig<P>,
 >(
     leaf_hash_params: &<P::LeafHash as CRHScheme>::Parameters,
     n_to_one_hash_params: &<SP::NToOneHash as CRHScheme>::Parameters,
@@ -104,7 +104,7 @@ impl<
             LeafDigest = F,
             LeafInnerDigestConverter = IdentityDigestConverter<F>,
         >,
-        SP: NArySparseConfig<N, P>,
+        SP: NArySparseConfig<P>,
     > NAryMerkleSparseTree<N, P, SP>
 {
     /// obtain an empty tree
@@ -410,7 +410,7 @@ impl<
     }
 }
 
-impl<const N: usize, P: Config, SP: NArySparseConfig<N, P>> NArySparsePath<N, P, SP>
+impl<const N: usize, P: Config, SP: NArySparseConfig<P>> NArySparsePath<N, P, SP>
 where
     Vec<<P as Config>::InnerDigest>: Borrow<<SP::NToOneHash as CRHScheme>::Input>,
     Vec<
@@ -418,7 +418,7 @@ where
             <P as Config>::LeafDigest,
             <<P as Config>::TwoToOneHash as TwoToOneCRHScheme>::Input,
         >>::TargetType,
-    >: Borrow<<<SP as NArySparseConfig<N, P>>::NToOneHash as CRHScheme>::Input>,
+    >: Borrow<<<SP as NArySparseConfig<P>>::NToOneHash as CRHScheme>::Input>,
 {
     /// Verify that a leaf is at `self.index` of the merkle tree.
     /// * `leaf_size`: leaf size in number of bytes
@@ -427,7 +427,7 @@ where
     pub fn verify<L: Borrow<P::Leaf> + Debug>(
         &self,
         leaf_hash_params: &LeafParam<P>,
-        n_to_one_params: &NToOneParam<N, P, SP>,
+        n_to_one_params: &NToOneParam<P, SP>,
         root_hash: &P::InnerDigest,
         leaf: L,
     ) -> Result<bool, crate::Error>
@@ -500,33 +500,11 @@ pub mod tests {
     use crate::{
         sparse::NAryMerkleSparseTree,
         tests::{
-            initialize_poseidon_config, BinaryPoseidonTree, PoseidonTree, QuinaryPoseidonTree,
-            TernaryPoseidonTree,
+            initialize_poseidon_config,
         },
-        traits::NAryConfig,
-        NAryMerkleTree,
     };
 
     use super::NArySparseConfig;
-
-    impl NArySparseConfig<2, PoseidonTree<Fr>> for BinaryPoseidonTree<Fr> {
-        const HEIGHT: u64 = 4;
-        type NToOneHashParams = PoseidonConfig<Fr>;
-        type NToOneHash = CRH<Fr>;
-    }
-
-    impl NArySparseConfig<3, PoseidonTree<Fr>> for TernaryPoseidonTree<Fr> {
-        const HEIGHT: u64 = 4;
-
-        type NToOneHashParams = PoseidonConfig<Fr>;
-        type NToOneHash = CRH<Fr>;
-    }
-
-    impl NArySparseConfig<5, PoseidonTree<Fr>> for QuinaryPoseidonTree<Fr> {
-        const HEIGHT: u64 = 4;
-        type NToOneHashParams = PoseidonConfig<Fr>;
-        type NToOneHash = CRH<Fr>;
-    }
 
     pub struct NoArrayCRH<F> {
         _f: PhantomData<F>,
@@ -568,48 +546,18 @@ pub mod tests {
         type TwoToOneHash = TwoToOneCRH<F>;
     }
 
-    pub struct NoArrayBinaryPoseidonTree<F: PrimeField + Absorb> {
-        _n: PhantomData<F>,
-    }
-
-    impl<F: PrimeField + Absorb> NArySparseConfig<2, NoArrayPoseidonTree<F>>
-        for NoArrayBinaryPoseidonTree<F>
+    impl<F: PrimeField + Absorb> NArySparseConfig<NoArrayPoseidonTree<F>>
+        for NoArrayPoseidonTree<F>
     {
         type NToOneHashParams = PoseidonConfig<F>;
         type NToOneHash = CRH<F>;
 
-        const HEIGHT: u64 = 4;
-    }
-
-    pub struct NoArrayTernaryPoseidonTree<F: PrimeField + Absorb> {
-        _n: PhantomData<F>,
-    }
-
-    impl<F: PrimeField + Absorb> NArySparseConfig<3, NoArrayPoseidonTree<F>>
-        for NoArrayTernaryPoseidonTree<F>
-    {
-        type NToOneHashParams = PoseidonConfig<F>;
-        type NToOneHash = CRH<F>;
-
-        const HEIGHT: u64 = 4;
-    }
-
-    pub struct NoArrayQuinaryPoseidonTree<F: PrimeField + Absorb> {
-        _n: PhantomData<F>,
-    }
-
-    impl<F: PrimeField + Absorb> NArySparseConfig<5, NoArrayPoseidonTree<F>>
-        for NoArrayQuinaryPoseidonTree<F>
-    {
-        type NToOneHashParams = PoseidonConfig<F>;
-        type NToOneHash = CRH<F>;
         const HEIGHT: u64 = 4;
     }
 
     fn run_test<
         const N: usize,
-        NP: NAryConfig<N, PoseidonTree<Fr>, NToOneHashParams = PoseidonConfig<Fr>>,
-        SP: NArySparseConfig<N, NoArrayPoseidonTree<Fr>, NToOneHashParams = PoseidonConfig<Fr>>,
+        SP: NArySparseConfig<NoArrayPoseidonTree<Fr>, NToOneHashParams = PoseidonConfig<Fr>>,
     >(
         n_leaf_nodes: usize,
         poseidon_conf: PoseidonConfig<Fr>,
@@ -623,9 +571,6 @@ pub mod tests {
             sparse_leaves.insert(i, value);
         }
 
-        let mt =
-            NAryMerkleTree::<N, PoseidonTree<Fr>, NP>::new(&poseidon_conf, &poseidon_conf, &leaves)
-                .unwrap();
         let mut sparse_mt = NAryMerkleSparseTree::<N, NoArrayPoseidonTree<Fr>, SP>::new(
             &poseidon_conf,
             &poseidon_conf,
@@ -634,23 +579,8 @@ pub mod tests {
         )
         .unwrap();
 
-        assert_eq!(mt.root(), sparse_mt.root());
-
         for (i, value) in index_values.clone() {
-            let proof_mt = mt.generate_proof(i as usize).unwrap();
             let proof_sparse_mt = sparse_mt.generate_proof(i as usize).unwrap();
-
-            // check that path are equiv to dense implementation
-            assert_eq!(proof_mt.auth_path.len(), proof_sparse_mt.auth_path.len());
-            assert!(proof_mt
-                .auth_path
-                .into_iter()
-                .zip(&proof_sparse_mt.auth_path)
-                .all(|(step1, step2)| step1.siblings == step2.siblings));
-            assert_eq!(
-                proof_mt.leaf_siblings_hashes,
-                proof_sparse_mt.leaf_siblings_hashes
-            );
 
             // check that proof is verified
             assert!(proof_sparse_mt
@@ -680,14 +610,14 @@ pub mod tests {
         let poseidon_conf = initialize_poseidon_config::<Fr>();
 
         let index_values = vec![(0, Fr::from(42)), (4, Fr::from(24))];
-        run_test::<2, BinaryPoseidonTree<Fr>, NoArrayBinaryPoseidonTree<Fr>>(
+        run_test::<2, NoArrayPoseidonTree<Fr>>(
             8,
             poseidon_conf.clone(),
             index_values.clone(),
         );
 
         let index_values = vec![(0, Fr::from(42)), (4, Fr::from(24)), (25, Fr::from(42))];
-        run_test::<3, TernaryPoseidonTree<Fr>, NoArrayTernaryPoseidonTree<Fr>>(
+        run_test::<3, NoArrayPoseidonTree<Fr>>(
             27,
             poseidon_conf.clone(),
             index_values.clone(),
@@ -699,7 +629,7 @@ pub mod tests {
             (70, Fr::from(24)),
             (123, Fr::from(42)),
         ];
-        run_test::<5, QuinaryPoseidonTree<Fr>, NoArrayQuinaryPoseidonTree<Fr>>(
+        run_test::<5, NoArrayPoseidonTree<Fr>>(
             125,
             poseidon_conf.clone(),
             index_values,

@@ -1,4 +1,4 @@
-use crate::constraints::index_to_selector;
+use crate::index_to_selector;
 use std::marker::PhantomData;
 
 use ark_crypto_primitives::{
@@ -10,8 +10,8 @@ use ark_r1cs_std::{alloc::AllocVar, eq::EqGadget, fields::fp::FpVar, prelude::Bo
 use ark_relations::gr1cs::SynthesisError;
 
 use crate::{
-    constraints::PathStepVar,
     sparse::traits::{NArySparseConfig, NArySparseConfigGadget},
+    PathStepVar,
 };
 
 use super::NArySparsePath;
@@ -21,8 +21,8 @@ pub struct NArySparsePathVar<
     P: Config,
     PG: ConfigGadget<P, F>,
     F: PrimeField,
-    SP: NArySparseConfig<N, P>,
-    SPG: NArySparseConfigGadget<N, P, PG, F, SP>,
+    SP: NArySparseConfig<P>,
+    SPG: NArySparseConfigGadget<P, PG, F, SP>,
 > {
     pub leaf_siblings_hashes: Vec<PG::LeafDigest>,
     pub auth_path: Vec<PathStepVar<N, P, F, PG>>,
@@ -35,8 +35,8 @@ impl<
         P: Config,
         PG: ConfigGadget<P, F, LeafDigest = FpVar<F>>,
         F: PrimeField,
-        SP: NArySparseConfig<N, P>,
-        SPG: NArySparseConfigGadget<N, P, PG, F, SP>,
+        SP: NArySparseConfig<P>,
+        SPG: NArySparseConfigGadget<P, PG, F, SP>,
     > NArySparsePathVar<N, P, PG, F, SP, SPG>
 {
     pub fn get_node(
@@ -72,8 +72,8 @@ impl<
         P: Config + Clone,
         PG: ConfigGadget<P, F>,
         F: PrimeField,
-        SP: NArySparseConfig<N, P>,
-        SPG: NArySparseConfigGadget<N, P, PG, F, SP>,
+        SP: NArySparseConfig<P>,
+        SPG: NArySparseConfigGadget<P, PG, F, SP>,
     > AllocVar<NArySparsePath<N, P, SP>, F> for NArySparsePathVar<N, P, PG, F, SP, SPG>
 {
     fn new_variable<T: std::borrow::Borrow<NArySparsePath<N, P, SP>>>(
@@ -117,10 +117,10 @@ type NToOneParam<
     P,
     PG,
     F,
-    SP: NArySparseConfig<N, P>,
-    SPG: NArySparseConfigGadget<N, P, PG, F, SP>,
-> = <<SPG as NArySparseConfigGadget<N, P, PG, F, SP>>::NToOneHash as CRHSchemeGadget<
-    <SP as NArySparseConfig<N, P>>::NToOneHash,
+    SP: NArySparseConfig<P>,
+    SPG: NArySparseConfigGadget<P, PG, F, SP>,
+> = <<SPG as NArySparseConfigGadget<P, PG, F, SP>>::NToOneHash as CRHSchemeGadget<
+    <SP as NArySparseConfig<P>>::NToOneHash,
     F,
 >>::ParametersVar;
 
@@ -129,8 +129,8 @@ impl<
         P: Config,
         PG: ConfigGadget<P, F, LeafDigest = FpVar<F>, InnerDigest = FpVar<F>>,
         F: PrimeField,
-        SP: NArySparseConfig<N, P>,
-        SPG: NArySparseConfigGadget<N, P, PG, F, SP>,
+        SP: NArySparseConfig<P>,
+        SPG: NArySparseConfigGadget<P, PG, F, SP>,
     > NArySparsePathVar<N, P, PG, F, SP, SPG>
 {
     /// Calculate the root of the Merkle tree assuming that `leaf` is the leaf on the path defined by `self`.
@@ -148,7 +148,7 @@ impl<
             &claimed_leaf_hash,
         )?;
 
-        let mut curr_hash = <SPG as NArySparseConfigGadget<N, P, PG, F, SP>>::NToOneHash::evaluate(
+        let mut curr_hash = <SPG as NArySparseConfigGadget<P, PG, F, SP>>::NToOneHash::evaluate(
             n_to_one_params,
             leaf_node.as_slice(),
         )?;
@@ -161,7 +161,7 @@ impl<
                 &curr_hash,
             )?;
 
-            curr_hash = <SPG as NArySparseConfigGadget<N, P, PG, F, SP>>::NToOneHash::evaluate(
+            curr_hash = <SPG as NArySparseConfigGadget<P, PG, F, SP>>::NToOneHash::evaluate(
                 &n_to_one_params,
                 node.as_slice(),
             )?;
@@ -233,10 +233,7 @@ pub mod tests {
 
     use crate::{
         sparse::{
-            tests::{
-                NoArrayBinaryPoseidonTree, NoArrayCRH, NoArrayPoseidonTree,
-                NoArrayQuinaryPoseidonTree, NoArrayTernaryPoseidonTree,
-            },
+            tests::{NoArrayCRH, NoArrayPoseidonTree},
             traits::{NArySparseConfig, NArySparseConfigGadget},
             NAryMerkleSparseTree,
         },
@@ -277,49 +274,13 @@ pub mod tests {
         type TwoToOneHash = TwoToOneCRHGadget<F>;
     }
 
-    pub struct NoArrayBinaryPoseidonTreeGadget<F: PrimeField + Absorb> {
-        _f: PhantomData<F>,
-    }
     impl
         NArySparseConfigGadget<
-            2,
             NoArrayPoseidonTree<Fr>,
             NoArrayPoseidonTreeGadget<Fr>,
             Fr,
-            NoArrayBinaryPoseidonTree<Fr>,
-        > for NoArrayBinaryPoseidonTreeGadget<Fr>
-    {
-        type NToOneHash = CRHGadget<Fr>;
-        const HEIGHT: u64 = 4;
-    }
-
-    pub struct NoArrayTernaryPoseidonTreeGadget<F: PrimeField + Absorb> {
-        _f: PhantomData<F>,
-    }
-    impl
-        NArySparseConfigGadget<
-            3,
             NoArrayPoseidonTree<Fr>,
-            NoArrayPoseidonTreeGadget<Fr>,
-            Fr,
-            NoArrayTernaryPoseidonTree<Fr>,
-        > for NoArrayTernaryPoseidonTreeGadget<Fr>
-    {
-        type NToOneHash = CRHGadget<Fr>;
-        const HEIGHT: u64 = 4;
-    }
-
-    pub struct NoArrayQuinaryPoseidonTreeGadget<F: PrimeField + Absorb> {
-        _f: PhantomData<F>,
-    }
-    impl
-        NArySparseConfigGadget<
-            5,
-            NoArrayPoseidonTree<Fr>,
-            NoArrayPoseidonTreeGadget<Fr>,
-            Fr,
-            NoArrayQuinaryPoseidonTree<Fr>,
-        > for NoArrayQuinaryPoseidonTreeGadget<Fr>
+        > for NoArrayPoseidonTreeGadget<Fr>
     {
         type NToOneHash = CRHGadget<Fr>;
         const HEIGHT: u64 = 4;
@@ -327,9 +288,8 @@ pub mod tests {
 
     fn run_test<
         const N: usize,
-        SP: NArySparseConfig<N, NoArrayPoseidonTree<Fr>, NToOneHash = CRH<Fr>>,
+        SP: NArySparseConfig<NoArrayPoseidonTree<Fr>, NToOneHash = CRH<Fr>>,
         SPG: NArySparseConfigGadget<
-            N,
             NoArrayPoseidonTree<Fr>,
             NoArrayPoseidonTreeGadget<Fr>,
             Fr,
@@ -414,13 +374,16 @@ pub mod tests {
     fn test_nary_sparse_trees_constraints() {
         let poseidon_conf = initialize_poseidon_config::<Fr>();
         let index_values = vec![(0, Fr::from(42)), (2, Fr::from(43))];
-        run_test::<2, NoArrayBinaryPoseidonTree<Fr>, NoArrayBinaryPoseidonTreeGadget<Fr>>(
+        run_test::<2, NoArrayPoseidonTree<Fr>, NoArrayPoseidonTreeGadget<Fr>>(
             poseidon_conf.clone(),
             index_values.clone(),
         );
 
-        let index_values = vec![(0, Fr::from(42)), (4, Fr::from(24)), (25, Fr::from(42))];
-        run_test::<3, NoArrayTernaryPoseidonTree<Fr>, NoArrayTernaryPoseidonTreeGadget<Fr>>(
+        let index_values: Vec<(
+            usize,
+            ark_ff::Fp<ark_ff::MontBackend<ark_bn254::FrConfig, 4>, 4>,
+        )> = vec![(0, Fr::from(42)), (4, Fr::from(24)), (25, Fr::from(42))];
+        run_test::<3, NoArrayPoseidonTree<Fr>, NoArrayPoseidonTreeGadget<Fr>>(
             poseidon_conf.clone(),
             index_values.clone(),
         );
@@ -431,7 +394,7 @@ pub mod tests {
             (70, Fr::from(24)),
             (123, Fr::from(42)),
         ];
-        run_test::<5, NoArrayQuinaryPoseidonTree<Fr>, NoArrayQuinaryPoseidonTreeGadget<Fr>>(
+        run_test::<5, NoArrayPoseidonTree<Fr>, NoArrayPoseidonTreeGadget<Fr>>(
             poseidon_conf.clone(),
             index_values,
         );

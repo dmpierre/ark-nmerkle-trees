@@ -5,7 +5,7 @@ use ark_crypto_primitives::{
 use ark_ff::PrimeField;
 use ark_serialize::{CanonicalDeserialize, CanonicalSerialize};
 
-pub trait NArySparseConfig<const N: usize, P: Config> {
+pub trait NArySparseConfig<P: Config> {
     type NToOneHashParams: Clone + CanonicalSerialize + CanonicalDeserialize + Sync;
     type NToOneHash: CRHScheme<
         Input = [P::InnerDigest],
@@ -17,17 +17,16 @@ pub trait NArySparseConfig<const N: usize, P: Config> {
 }
 
 pub trait NArySparseConfigGadget<
-    const N: usize,
     P: Config,
     PG: ConfigGadget<P, F>,
     F: PrimeField,
-    SP: NArySparseConfig<N, P>,
+    SP: NArySparseConfig<P>,
 >
 {
     const HEIGHT: u64;
 
     type NToOneHash: CRHSchemeGadget<
-        <SP as NArySparseConfig<N, P>>::NToOneHash,
+        <SP as NArySparseConfig<P>>::NToOneHash,
         F,
         InputVar = [PG::InnerDigest],
         OutputVar = PG::InnerDigest,
