@@ -14,57 +14,6 @@ use ark_std::{cfg_into_iter, cfg_iter_mut};
 
 pub mod sparse;
 
-#[derive(Debug, Clone)]
-pub struct PathStep<P: Config> {
-    index: usize, // indicates position in the array before hashing with siblings
-    siblings: Vec<P::InnerDigest>,
-}
-
-
-impl<P: Config> PathStep<P> {
-    pub fn new(index: usize, siblings: Vec<P::InnerDigest>) -> Self {
-        Self { index, siblings }
-    }
-}
-
-pub(crate) fn index_to_selector<const N: usize>(idx: usize) -> Vec<bool> {
-    let mut idx_as_vec = vec![false; N - 1];
-    if idx == N - 1 {
-        idx_as_vec // this is the last element, array is false everywhere
-    } else {
-        idx_as_vec[idx] = true;
-        idx_as_vec
-    }
-}
-
-#[derive(Default, Clone)]
-pub struct PathStepVar<const N: usize, P: Config, F: PrimeField, PG: ConfigGadget<P, F>> {
-    pub selectors: Vec<Boolean<F>>,
-    pub siblings: Vec<PG::InnerDigest>,
-}
-
-impl<const N: usize, P: Config, F: PrimeField, PG: ConfigGadget<P, F>> AllocVar<PathStep<P>, F>
-    for PathStepVar<N, P, F, PG>
-{
-    fn new_variable<T: std::borrow::Borrow<PathStep<P>>>(
-        cs: impl Into<ark_relations::gr1cs::Namespace<F>>,
-        f: impl FnOnce() -> Result<T, ark_relations::gr1cs::SynthesisError>,
-        mode: ark_r1cs_std::prelude::AllocationMode,
-    ) -> Result<Self, ark_relations::gr1cs::SynthesisError> {
-        let cs = cs.into().cs();
-        let v = f()?;
-        let PathStep { index, siblings } = v.borrow();
-        let selectors = Vec::new_variable(cs.clone(), || Ok(index_to_selector::<N>(*index)), mode)?;
-        let siblings =
-            Vec::<PG::InnerDigest>::new_variable(cs.clone(), || Ok(siblings.clone()), mode)?;
-        Ok(PathStepVar {
-            selectors,
-            siblings,
-        })
-    }
-}
-
-
 /// Returns true iff the index represents the root.
 #[inline]
 pub(crate) fn is_root(index: usize) -> bool {

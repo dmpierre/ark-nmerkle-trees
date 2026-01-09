@@ -1,4 +1,3 @@
-use crate::index_to_selector;
 use std::marker::PhantomData;
 
 use ark_crypto_primitives::{
@@ -6,13 +5,18 @@ use ark_crypto_primitives::{
     merkle_tree::{constraints::ConfigGadget, Config},
 };
 use ark_ff::PrimeField;
-use ark_r1cs_std::{alloc::AllocVar, eq::EqGadget, fields::fp::FpVar, prelude::Boolean};
-use ark_relations::gr1cs::SynthesisError;
-
-use crate::{
-    sparse::traits::{NArySparseConfig, NArySparseConfigGadget},
-    PathStepVar,
+use ark_r1cs_std::{
+    alloc::AllocVar,
+    eq::EqGadget,
+    fields::{fp::FpVar, FieldVar},
+    prelude::Boolean,
+    GR1CSVar,
 };
+use ark_relations::gr1cs::SynthesisError;
+use ark_std::log2;
+use num::BigUint;
+
+use crate::sparse::traits::{NArySparseConfig, NArySparseConfigGadget};
 
 use super::NArySparsePath;
 
@@ -25,46 +29,9 @@ pub struct NArySparsePathVar<
     SPG: NArySparseConfigGadget<P, PG, F, SP>,
 > {
     pub leaf_siblings_hashes: Vec<PG::LeafDigest>,
-    pub auth_path: Vec<PathStepVar<N, P, F, PG>>,
-    pub leaf_selectors: Vec<Boolean<F>>, // indicates position in the array before hashing siblings leaf nodes
+    pub auth_path: Vec<Vec<PG::InnerDigest>>,
+    pub index: FpVar<F>,
     _m: PhantomData<(SP, SPG)>,
-}
-
-impl<
-        const N: usize,
-        P: Config,
-        PG: ConfigGadget<P, F, LeafDigest = FpVar<F>>,
-        F: PrimeField,
-        SP: NArySparseConfig<P>,
-        SPG: NArySparseConfigGadget<P, PG, F, SP>,
-    > NArySparsePathVar<N, P, PG, F, SP, SPG>
-{
-    pub fn get_node(
-        siblings: &Vec<PG::LeafDigest>,
-        selectors: &Vec<Boolean<F>>,
-        claimed_hash: &PG::LeafDigest,
-    ) -> Result<Vec<FpVar<F>>, SynthesisError> {
-        let mut to_hash = Vec::with_capacity(N);
-
-        let mut ptr = claimed_hash;
-        let mut insert = selectors[0].select(ptr, &siblings[0])?;
-        let mut cur = selectors[0].select(&siblings[0], ptr)?;
-        to_hash.push(insert);
-
-        let mut inserted = selectors[0].clone();
-        for i in 1..N - 1 {
-            ptr = &siblings[i];
-            let selector = inserted.select(&Boolean::constant(true), &selectors[i])?;
-            insert = selector.select(&cur, ptr)?;
-            cur = selector.select(ptr, &cur)?;
-            to_hash.push(insert);
-            inserted = selector;
-        }
-
-        to_hash.push(cur);
-
-        Ok(to_hash)
-    }
 }
 
 impl<
@@ -86,22 +53,20 @@ impl<
         let NArySparsePath {
             leaf_siblings_hashes,
             auth_path,
-            leaf_index,
+            index,
             _m,
         } = v.borrow();
         let leaf_siblings_hashes =
             Vec::new_variable(cs.clone(), || Ok(leaf_siblings_hashes.clone()), mode)?;
-        let auth_path = Vec::<PathStepVar<N, P, F, PG>>::new_variable(
-            cs.clone(),
-            || Ok(auth_path.to_vec()),
-            mode,
-        )?;
-        let leaf_selectors =
-            Vec::new_variable(cs.clone(), || Ok(index_to_selector::<N>(*leaf_index)), mode)?;
+        let auth_path = auth_path
+            .iter()
+            .map(|i| Vec::new_variable(cs.clone(), || Ok(&i[..]), mode))
+            .collect::<Result<_, _>>()?;
+        let index = FpVar::new_variable(cs.clone(), || Ok(F::from(*index as u64)), mode)?;
         Ok(NArySparsePathVar {
             leaf_siblings_hashes,
             auth_path,
-            leaf_selectors,
+            index,
             _m: PhantomData::<(SP, SPG)>,
         })
     }
@@ -142,28 +107,67 @@ impl<
     ) -> Result<PG::InnerDigest, SynthesisError> {
         let claimed_leaf_hash = PG::LeafHash::evaluate(leaf_params, leaf)?;
 
-        let leaf_node = NArySparsePathVar::<N, P, PG, F, SP, SPG>::get_node(
-            &self.leaf_siblings_hashes,
-            &self.leaf_selectors,
-            &claimed_leaf_hash,
-        )?;
+        let index_bits_chunks = {
+            let mut limbs_bits = vec![];
+            let mut v: BigUint = self.index.value().unwrap_or_default().into();
+            for _ in 0..SP::HEIGHT - 1 {
+                let mut bits = (&v % BigUint::from(N as u64))
+                    .to_radix_le(2)
+                    .into_iter()
+                    .map(|b| b != 0)
+                    .collect::<Vec<_>>();
+                bits.resize(log2(N) as usize, false);
+                limbs_bits.push(bits);
+                v /= BigUint::from(N as u64);
+            }
+
+            let limbs_bits = limbs_bits
+                .iter()
+                .map(|i| Vec::new_variable_with_inferred_mode(self.index.cs(), || Ok(&i[..])))
+                .collect::<Result<Vec<_>, _>>()?;
+
+            let mut sum = FpVar::zero();
+            let mut power = FpVar::one();
+            for bits in &limbs_bits {
+                sum += Boolean::le_bits_to_fp(bits)? * &power;
+                power *= FpVar::constant(F::from(N as u64));
+            }
+
+            sum.enforce_equal(&self.index)?;
+
+            limbs_bits
+        };
+
+        fn mux<F: PrimeField>(
+            mut vec: Vec<FpVar<F>>,
+            pos: &[Boolean<F>],
+        ) -> Result<FpVar<F>, SynthesisError> {
+            vec.resize(2usize.pow(pos.len() as u32), FpVar::zero());
+            for b in pos {
+                vec = vec
+                    .chunks(2)
+                    .map(|v| b.select(&v[1], &v[0]))
+                    .collect::<Result<_, _>>()?;
+            }
+            assert_eq!(vec.len(), 1);
+            Ok(vec.swap_remove(0))
+        }
+
+        mux(self.leaf_siblings_hashes.clone(), &index_bits_chunks[0])?
+            .enforce_equal(&claimed_leaf_hash)?;
 
         let mut curr_hash = <SPG as NArySparseConfigGadget<P, PG, F, SP>>::NToOneHash::evaluate(
             n_to_one_params,
-            leaf_node.as_slice(),
+            &self.leaf_siblings_hashes,
         )?;
 
-        // To traverse up a MT, we iterate over the path from bottom to top (i.e. in reverse)
-        for step in (0..self.auth_path.len()).rev() {
-            let node = NArySparsePathVar::<N, P, PG, F, SP, SPG>::get_node(
-                &self.auth_path[step].siblings,
-                &self.auth_path[step].selectors,
-                &curr_hash,
-            )?;
+        for step in 0..self.auth_path.len() {
+            mux(self.auth_path[step].clone(), &index_bits_chunks[step + 1])?
+                .enforce_equal(&curr_hash)?;
 
             curr_hash = <SPG as NArySparseConfigGadget<P, PG, F, SP>>::NToOneHash::evaluate(
-                &n_to_one_params,
-                node.as_slice(),
+                n_to_one_params,
+                &self.auth_path[step],
             )?;
         }
 
@@ -189,9 +193,118 @@ impl<
         old_leaf: &PG::Leaf,
         new_leaf: &PG::Leaf,
     ) -> Result<PG::InnerDigest, SynthesisError> {
-        self.verify_membership(leaf_params, n_to_one_params, old_root, old_leaf)?
-            .enforce_equal(&Boolean::TRUE)?;
-        Ok(self.calculate_root(leaf_params, n_to_one_params, new_leaf)?)
+        let old_leaf_hash = PG::LeafHash::evaluate(leaf_params, old_leaf)?;
+        let new_leaf_hash = PG::LeafHash::evaluate(leaf_params, new_leaf)?;
+        let index_limbs = {
+            let mut limbs_bits = vec![];
+            let mut v: BigUint = self.index.value().unwrap_or_default().into();
+            for _ in 0..SP::HEIGHT - 1 {
+                let mut bits = (&v % BigUint::from(N as u64))
+                    .to_radix_le(2)
+                    .into_iter()
+                    .map(|b| b != 0)
+                    .collect::<Vec<_>>();
+                bits.resize(log2(N) as usize, false);
+                limbs_bits.push(bits);
+                v /= BigUint::from(N as u64);
+            }
+
+            let limbs_bits = limbs_bits
+                .iter()
+                .map(|i| Vec::new_variable_with_inferred_mode(self.index.cs(), || Ok(&i[..])))
+                .collect::<Result<Vec<_>, _>>()?;
+
+            let mut limbs = vec![];
+
+            let mut sum = FpVar::zero();
+            let mut power = FpVar::one();
+            for bits in limbs_bits {
+                let limb = Boolean::le_bits_to_fp(&bits)?;
+                sum += &limb * &power;
+                power *= FpVar::constant(F::from(N as u64));
+                limbs.push(limb);
+            }
+
+            sum.enforce_equal(&self.index)?;
+
+            limbs
+        };
+
+        let b = {
+            let v = index_limbs
+                .value()
+                .unwrap_or(vec![F::zero(); SP::HEIGHT as usize - 1]);
+            let bits = v
+                .into_iter()
+                .map(|j| {
+                    (0..N)
+                        .map(|i| {
+                            Boolean::new_variable_with_inferred_mode(index_limbs.cs(), || {
+                                Ok(j == F::from(i as u64))
+                            })
+                        })
+                        .collect::<Result<Vec<_>, _>>()
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+
+            let mut sum1 = FpVar::zero();
+            let mut sum2 = FpVar::zero();
+            for j in 0..SP::HEIGHT as usize - 1 {
+                for i in 0..N {
+                    sum1 += FpVar::from(bits[j][i].clone()) * F::from(i as u64);
+                    sum2 += FpVar::from(bits[j][i].clone())
+                }
+                sum1 -= &index_limbs[j];
+                sum1 *= F::from(N.pow(j as u32) as u64);
+                sum2 -= FpVar::one();
+                sum2 *= F::from(2u64.pow(j as u32));
+            }
+            sum1.enforce_equal(&FpVar::zero())?;
+            sum2.enforce_equal(&FpVar::zero())?;
+            bits
+        };
+
+        let mut old_curr_hash =
+            <SPG as NArySparseConfigGadget<P, PG, F, SP>>::NToOneHash::evaluate(
+                n_to_one_params,
+                &b[0]
+                    .iter()
+                    .zip(&self.leaf_siblings_hashes)
+                    .map(|(bit, i)| bit.select(&old_leaf_hash, i))
+                    .collect::<Result<Vec<_>, _>>()?[..],
+            )?;
+        let mut new_curr_hash =
+            <SPG as NArySparseConfigGadget<P, PG, F, SP>>::NToOneHash::evaluate(
+                n_to_one_params,
+                &b[0]
+                    .iter()
+                    .zip(&self.leaf_siblings_hashes)
+                    .map(|(bit, i)| bit.select(&new_leaf_hash, i))
+                    .collect::<Result<Vec<_>, _>>()?[..],
+            )?;
+
+        for step in 0..self.auth_path.len() {
+            old_curr_hash = <SPG as NArySparseConfigGadget<P, PG, F, SP>>::NToOneHash::evaluate(
+                n_to_one_params,
+                &b[step + 1]
+                    .iter()
+                    .zip(&self.auth_path[step])
+                    .map(|(bit, i)| bit.select(&old_curr_hash, i))
+                    .collect::<Result<Vec<_>, _>>()?[..],
+            )?;
+            new_curr_hash = <SPG as NArySparseConfigGadget<P, PG, F, SP>>::NToOneHash::evaluate(
+                n_to_one_params,
+                &b[step + 1]
+                    .iter()
+                    .zip(&self.auth_path[step])
+                    .map(|(bit, i)| bit.select(&new_curr_hash, i))
+                    .collect::<Result<Vec<_>, _>>()?[..],
+            )?;
+        }
+
+        old_curr_hash.enforce_equal(old_root)?;
+
+        Ok(new_curr_hash)
     }
 
     pub fn update_and_check(
@@ -368,6 +481,7 @@ pub mod tests {
                 .unwrap();
             assert!(update.value().unwrap());
         }
+        println!("{} {}", cs.num_constraints(), cs.num_variables());
     }
 
     #[test]

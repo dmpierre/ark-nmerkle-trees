@@ -15,7 +15,7 @@ use ark_ff::PrimeField;
 
 use crate::{
     convert_index_to_last_level, leaf_siblings, left_child, n_leaves, n_nodes, parent, siblings,
-    sparse::traits::NArySparseConfig, tree_height, PathStep, Siblings,
+    sparse::traits::NArySparseConfig, tree_height, Siblings,
 };
 
 pub mod constraints;
@@ -23,27 +23,25 @@ pub mod traits;
 
 pub type LeafParam<P: Config> = <P::LeafHash as CRHScheme>::Parameters;
 pub type NToOneParam<P: Config, SP: NArySparseConfig<P>> =
-    <<SP as NArySparseConfig< P>>::NToOneHash as CRHScheme>::Parameters;
+    <<SP as NArySparseConfig<P>>::NToOneHash as CRHScheme>::Parameters;
 
 #[derive(Clone)]
 pub struct NArySparsePath<const N: usize, P: Config, SP: NArySparseConfig<P>> {
     pub leaf_siblings_hashes: Vec<P::LeafDigest>,
-    pub auth_path: Vec<PathStep<P>>,
-    pub leaf_index: usize, // indicates position in the array before hashing siblings leaf nodes
+    pub auth_path: Vec<Vec<P::InnerDigest>>,
+    pub index: usize,
     _m: PhantomData<SP>,
 }
 
 impl<const N: usize, P: Config, SP: NArySparseConfig<P>> Default for NArySparsePath<N, P, SP> {
     fn default() -> Self {
-        let leaf_siblings_hashes = vec![P::LeafDigest::default(); N - 1];
-        let leaf_index = 0;
-        let auth_path = (0..SP::HEIGHT - 2)
-            .map(|_| PathStep::<P>::new(0, vec![P::InnerDigest::default(); N - 1]))
-            .collect();
+        let leaf_siblings_hashes = vec![P::LeafDigest::default(); N];
+        let index = 0;
+        let auth_path = vec![vec![P::InnerDigest::default(); N]; SP::HEIGHT as usize - 2];
         Self {
             leaf_siblings_hashes,
             auth_path,
-            leaf_index,
+            index,
             _m: PhantomData,
         }
     }
@@ -52,13 +50,13 @@ impl<const N: usize, P: Config, SP: NArySparseConfig<P>> Default for NArySparseP
 impl<const N: usize, P: Config, NP: NArySparseConfig<P>> NArySparsePath<N, P, NP> {
     pub fn new(
         leaf_siblings_hashes: Vec<P::LeafDigest>,
-        auth_path: Vec<PathStep<P>>,
-        leaf_index: usize,
+        auth_path: Vec<Vec<P::InnerDigest>>,
+        index: usize,
     ) -> NArySparsePath<N, P, NP> {
         NArySparsePath {
             leaf_siblings_hashes,
             auth_path,
-            leaf_index,
+            index,
             _m: PhantomData::<NP> {},
         }
     }
@@ -217,12 +215,12 @@ impl<
         self.root
     }
 
-    fn compute_auth_path(&self, index: usize) -> Vec<PathStep<P>> {
+    fn compute_auth_path(&self, index: usize) -> Vec<Vec<P::InnerDigest>> {
         let tree_height = SP::HEIGHT;
         let num_leaves = n_leaves(SP::HEIGHT as u32, N);
         let n_nodes = n_nodes(SP::HEIGHT as u32, N);
         let tree_index = convert_index_to_last_level(n_nodes, num_leaves, index);
-        let mut path = Vec::<PathStep<P>>::with_capacity((tree_height - 2) as usize);
+        let mut path = Vec::<Vec<P::InnerDigest>>::with_capacity((tree_height - 2) as usize);
         let mut current_node = parent(tree_index as usize, N);
 
         for level in 1..SP::HEIGHT - 1 {
@@ -233,12 +231,12 @@ impl<
 
             let siblings = left_siblings
                 .into_iter()
+                .chain(vec![current_node])
                 .chain(right_siblings)
                 .map(|idx| self.tree.get(&idx).copied().unwrap_or(empty_hash))
                 .collect::<Vec<P::InnerDigest>>();
 
-            let step = PathStep::new((current_node - 1) % N, siblings);
-            path.push(step);
+            path.push(siblings);
 
             current_node = parent(current_node, N);
         }
@@ -250,8 +248,8 @@ impl<
         let path = self.compute_auth_path(index);
         Ok(NArySparsePath::new(
             self.get_leaf_siblings_hashes(index as usize),
-            path.into_iter().rev().collect(),
-            (index as usize) % N,
+            path,
+            index,
         ))
     }
 
@@ -263,6 +261,7 @@ impl<
         let right_siblings = leaf_siblings(index, N, Siblings::Right);
         left_siblings
             .iter()
+            .chain(&[index])
             .chain(&right_siblings)
             .map(|idx| {
                 self.tree
@@ -363,8 +362,7 @@ impl<
         }
 
         debug_assert_eq!(path_bottom_to_top.len(), (SP::HEIGHT - 1) as usize);
-        let path_top_to_bottom: Vec<_> = path_bottom_to_top.into_iter().rev().collect();
-        Ok((new_leaf_hash, path_top_to_bottom))
+        Ok((new_leaf_hash, path_bottom_to_top))
     }
 
     pub fn update(&mut self, index: usize, new_leaf: &P::Leaf) -> Result<(), crate::Error> {
@@ -372,12 +370,12 @@ impl<
         let n_nodes = n_nodes(SP::HEIGHT as u32, N);
         let leaf_index_in_tree = convert_index_to_last_level(n_nodes, num_leaves, index);
 
-        let (updated_leaf_hash, mut updated_path) = self.updated_path(index, new_leaf)?;
+        let (updated_leaf_hash, updated_path) = self.updated_path(index, new_leaf)?;
         self.tree.insert(leaf_index_in_tree, updated_leaf_hash);
         let mut curr_index = convert_index_to_last_level(n_nodes, num_leaves, index);
-        for _ in 0..SP::HEIGHT - 1 {
+        for v in updated_path {
             curr_index = parent(curr_index, N);
-            self.tree.insert(curr_index, updated_path.pop().unwrap());
+            self.tree.insert(curr_index, v);
         }
         self.root = self.tree[&0];
         Ok(())
@@ -394,15 +392,15 @@ impl<
         let num_leaves = n_leaves(SP::HEIGHT as u32, N);
         let n_nodes = n_nodes(SP::HEIGHT as u32, N);
         let leaf_index_in_tree = convert_index_to_last_level(n_nodes, num_leaves, index);
-        let (updated_leaf_hash, mut updated_path) = self.updated_path(index, new_leaf)?;
+        let (updated_leaf_hash, updated_path) = self.updated_path(index, new_leaf)?;
         if &updated_path[0] != asserted_new_root {
             return Ok(false);
         }
         self.tree.insert(leaf_index_in_tree, updated_leaf_hash);
         let mut curr_index = leaf_index_in_tree;
-        for _ in 0..SP::HEIGHT - 1 {
+        for v in updated_path {
             curr_index = parent(curr_index, N);
-            self.tree.insert(curr_index, updated_path.pop().unwrap());
+            self.tree.insert(curr_index, v);
         }
         assert!(is_root(curr_index));
         self.root = self.tree[&0];
@@ -439,9 +437,13 @@ where
     {
         // calculate leaf hash
         let claimed_leaf_hash = P::LeafHash::evaluate(&leaf_hash_params, leaf)?;
+        let mut index = self.index;
+
         let mut leaves = self.leaf_siblings_hashes.clone();
-        let leaf_index_in_array = self.leaf_index;
-        leaves.insert(leaf_index_in_array as usize, claimed_leaf_hash);
+        if leaves[index % N] != claimed_leaf_hash {
+            return Ok(false);
+        }
+        index /= N;
 
         let to_hash = leaves
             .iter()
@@ -455,10 +457,12 @@ where
         let mut curr_path_node = SP::NToOneHash::evaluate(&n_to_one_params, to_hash)?;
 
         // Check levels between leaf level and root
-        for level in (0..self.auth_path.len()).rev() {
-            let step = &self.auth_path[level];
-            let mut to_hash = step.siblings.clone();
-            to_hash.insert(step.index as usize, curr_path_node);
+        for level in (0..self.auth_path.len()) {
+            let to_hash = self.auth_path[level].clone();
+            if to_hash[index % N] != curr_path_node {
+                return Ok(false);
+            }
+            index /= N;
             // check if path node at this level is left or right
             // update curr_path_node
 
@@ -497,12 +501,7 @@ pub mod tests {
     use ark_ff::PrimeField;
     use ark_std::rand::Rng;
 
-    use crate::{
-        sparse::NAryMerkleSparseTree,
-        tests::{
-            initialize_poseidon_config,
-        },
-    };
+    use crate::{sparse::NAryMerkleSparseTree, tests::initialize_poseidon_config};
 
     use super::NArySparseConfig;
 
@@ -546,9 +545,7 @@ pub mod tests {
         type TwoToOneHash = TwoToOneCRH<F>;
     }
 
-    impl<F: PrimeField + Absorb> NArySparseConfig<NoArrayPoseidonTree<F>>
-        for NoArrayPoseidonTree<F>
-    {
+    impl<F: PrimeField + Absorb> NArySparseConfig<NoArrayPoseidonTree<F>> for NoArrayPoseidonTree<F> {
         type NToOneHashParams = PoseidonConfig<F>;
         type NToOneHash = CRH<F>;
 
@@ -610,18 +607,10 @@ pub mod tests {
         let poseidon_conf = initialize_poseidon_config::<Fr>();
 
         let index_values = vec![(0, Fr::from(42)), (4, Fr::from(24))];
-        run_test::<2, NoArrayPoseidonTree<Fr>>(
-            8,
-            poseidon_conf.clone(),
-            index_values.clone(),
-        );
+        run_test::<2, NoArrayPoseidonTree<Fr>>(8, poseidon_conf.clone(), index_values.clone());
 
         let index_values = vec![(0, Fr::from(42)), (4, Fr::from(24)), (25, Fr::from(42))];
-        run_test::<3, NoArrayPoseidonTree<Fr>>(
-            27,
-            poseidon_conf.clone(),
-            index_values.clone(),
-        );
+        run_test::<3, NoArrayPoseidonTree<Fr>>(27, poseidon_conf.clone(), index_values.clone());
 
         let index_values = vec![
             (0, Fr::from(42)),
@@ -629,10 +618,6 @@ pub mod tests {
             (70, Fr::from(24)),
             (123, Fr::from(42)),
         ];
-        run_test::<5, NoArrayPoseidonTree<Fr>>(
-            125,
-            poseidon_conf.clone(),
-            index_values,
-        );
+        run_test::<5, NoArrayPoseidonTree<Fr>>(125, poseidon_conf.clone(), index_values);
     }
 }
